@@ -10,5 +10,6 @@ __all_models__ = [
 	"mlp_deepset",
 	"deepset",
 	"equivariant-transformer-x",
-	"cmret"
+	"cmret",
+	"messy"
 ]
