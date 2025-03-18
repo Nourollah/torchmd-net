@@ -166,6 +166,18 @@ def create_model(args, prior_model=None, mean=None, std=None):
             num_head=args["model_arg"]["num_head"],
             temperature_coeff=args["model_arg"]["temperature_coeff"],
         )
+
+    elif args["model"] == "messy":
+        from torchmdnet.models.messy_net import Messy
+
+        is_equivariant = False
+        representation_model = Messy(
+            base_cutoff=args["base_cutoff"],
+            outer_cutoff=args["outer_cutoff"],
+            embedding_size=args["embedding_dimension"],
+            # radial_basis=None,
+            max_num_neighbors=args["max_num_neighbors"],
+        )
     else:
         raise ValueError(f'Unknown architecture: {args["model"]}')
 
