@@ -47,7 +47,7 @@ class hp:
 	itrtns = 100
 
 	# Batch size - batching is not currently implemented
-	batch_size = 4
+	batch_size = 20
 
 	max_molecules = 3500
 
@@ -179,45 +179,66 @@ SWAPPED_ATOMIC_NUMBERS = {v: k for k, v in ATOMIC_NUMBERS.items()}
 
 
 class MultiHeadAttention(nn.Module):
-    def __init__(self):
-        super(MultiHeadAttention, self).__init__()
-        self.dotf = hp.num_heads * hp.dotf * hp.dotf
-        self.num_heads = hp.num_heads
-        self.W_q = nn.Linear(self.dotf, self.dotf)
-        self.W_k = nn.Linear(self.dotf, self.dotf)
-        self.W_v = nn.Linear(self.dotf, self.dotf)
-        self.W_o = nn.Linear(self.dotf, self.dotf)
-        self.temperature = 1.5
-        # Weight initialization
-        nn.init.xavier_uniform_(self.W_q.weight)
-        nn.init.xavier_uniform_(self.W_k.weight)
-        nn.init.xavier_uniform_(self.W_v.weight)
-        nn.init.xavier_uniform_(self.W_o.weight)
+	def __init__(self):
+		super(MultiHeadAttention, self).__init__()
+		self.dotf = hp.num_heads * hp.dotf * hp.dotf
+		self.num_heads = hp.num_heads
+		self.W_q = nn.Linear(self.dotf, self.dotf)
+		self.W_k = nn.Linear(self.dotf, self.dotf)
+		self.W_v = nn.Linear(self.dotf, self.dotf)
+		self.W_o = nn.Linear(self.dotf, self.dotf)
+		self.temperature = 1.5
+		# Weight initialization
+		nn.init.xavier_uniform_(self.W_q.weight)
+		nn.init.xavier_uniform_(self.W_k.weight)
+		nn.init.xavier_uniform_(self.W_v.weight)
+		nn.init.xavier_uniform_(self.W_o.weight)
 
-    def sdp_attention(self, Q, K, V):
+	def sdp_attention(self, Q, K, V):
+		attn_scores = torch.matmul(Q, K.transpose(-2, -1)) / (hp.dotf * self.temperature)
+		attn_probs = torch.softmax(attn_scores, dim=-1)
+		attn_probs = torch.clamp(attn_probs, min=1e-8)
+		output = torch.matmul(attn_probs, V)
+		return output
 
-        attn_scores = torch.matmul(Q, K.transpose(-2, -1)
-                                   ) / (hp.dotf * self.temperature)
-        attn_probs = torch.softmax(attn_scores, dim=-1)
-        attn_probs = torch.clamp(attn_probs, min=1e-8)
-        output = torch.matmul(attn_probs, V)
-        return output
+	def split_heads(self, x):
+		# Handle both batched and unbatched inputs
+		if x.dim() == 1:  # Unbatched
+			return x.view(1, self.num_heads, hp.dotf * hp.dotf).transpose(1, 2)
+		else:  # Batched
+			batch_size = x.size(0)
+			return x.view(batch_size, self.num_heads, hp.dotf * hp.dotf).transpose(1, 2)
 
-    def split_heads(self, x):
-        return x.view(1, self.num_heads, hp.dotf * hp.dotf).transpose(1, 2)
-        # return x.view(1, self.num_heads, self.d_k)
+	def combine_heads(self, x):
+		# Handle both batched and unbatched inputs
+		if x.size(0) == 1:  # Unbatched
+			return x.transpose(1, 2).contiguous().view(1, self.dotf)
+		else:  # Batched
+			batch_size = x.size(0)
+			return x.transpose(1, 2).contiguous().view(batch_size, self.dotf)
 
-    def combine_heads(self, x):
-        lsize, _,  d_k = x.size()
-        return x.transpose(1, 2).contiguous().view(lsize, self.dotf)
+	def forward(self, Q, K, V):
+		# Determine if input is batched
+		is_batched = Q.dim() > 1
 
-    def forward(self, Q, K, V):
-        Q = self.split_heads(self.W_q(Q))
-        K = self.split_heads(self.W_k(K))
-        V = self.split_heads(self.W_v(V))
-        attn_output = self.sdp_attention(Q, K, V)
-        output = self.W_o(self.combine_heads(attn_output))
-        return output
+		# Process input through linear layers
+		Q_proj = self.W_q(Q)
+		K_proj = self.W_k(K)
+		V_proj = self.W_v(V)
+
+		# Split heads
+		Q_split = self.split_heads(Q_proj)
+		K_split = self.split_heads(K_proj)
+		V_split = self.split_heads(V_proj)
+
+		# Apply attention
+		attn_output = self.sdp_attention(Q_split, K_split, V_split)
+
+		# Combine heads and project
+		output = self.W_o(self.combine_heads(attn_output))
+
+		return output
+
 
 
 class FeedForward(nn.Module):
@@ -234,41 +255,44 @@ class FeedForward(nn.Module):
 
 
 class DecoderLayer(nn.Module):
-    def __init__(self):
-        super(DecoderLayer, self).__init__()
-        self.normx = nn.LayerNorm(hp.num_heads * hp.dotf * hp.dotf)
-        self.normy = nn.LayerNorm(hp.num_heads * hp.dotf * hp.dotf)
-        self.self_attention = MultiHeadAttention()
-        self.norm1 = nn.LayerNorm(hp.num_heads * hp.dotf * hp.dotf)
-        self.GCN_dec_attention = MultiHeadAttention()
-        self.norm2 = nn.LayerNorm(hp.num_heads * hp.dotf * hp.dotf)
-        self.ffn = FeedForward(hp.num_heads * hp.dotf * hp.dotf, hp.doff, hp.dropout)
-        self.ffn2 = FeedForward(hp.num_heads * hp.dotf * hp.dotf, hp.doff, hp.dropout)
-        self.norm3 = nn.LayerNorm(hp.dotf * hp.dotf * hp.num_heads)
-        self.dropout = nn.Dropout(hp.dropout)
-        self.afn = nn.GELU()  # GELU
-        self.afn1 = nn.GELU()  # GELU
+	def __init__(self):
+		super(DecoderLayer, self).__init__()
+		self.normx = nn.LayerNorm(hp.num_heads * hp.dotf * hp.dotf)
+		self.normy = nn.LayerNorm(hp.num_heads * hp.dotf * hp.dotf)
+		self.self_attention = MultiHeadAttention()
+		self.norm1 = nn.LayerNorm(hp.num_heads * hp.dotf * hp.dotf)
+		self.GCN_dec_attention = MultiHeadAttention()
+		self.norm2 = nn.LayerNorm(hp.num_heads * hp.dotf * hp.dotf)
+		self.ffn = FeedForward(hp.num_heads * hp.dotf * hp.dotf, hp.doff, hp.dropout)
+		self.ffn2 = FeedForward(hp.num_heads * hp.dotf * hp.dotf, hp.doff, hp.dropout)
+		self.norm3 = nn.LayerNorm(hp.dotf * hp.dotf * hp.num_heads)
+		self.dropout = nn.Dropout(hp.dropout)
+		self.afn = nn.GELU()  # GELU
+		self.afn1 = nn.GELU()  # GELU
 
-    def forward(self, x, y):
-        x = self.normx(x).flatten()
-        y = self.normy(y).flatten()
+	def forward(self, x, y):
+		# Apply layer norms - works with both batched and unbatched inputs
+		x_norm = self.normx(x)
+		y_norm = self.normy(y)
 
-        # Self-Attention + Add & Norm
-        self_attn_output = self.dropout(self.self_attention(x, x, x))
-        x = x + self_attn_output
-        x = self.afn(self.norm1(x + self_attn_output))
-        # x = x + self_attn_output
-        # GCN-Decoder Attention + Add & Norm
-        GCN_dec_attn_output = self.GCN_dec_attention(x, x, y)
-        x = self.afn1(self.norm2(x + GCN_dec_attn_output))
-        # x = x + GCN_dec_attn_output
-        # Feed Forward + Add & Norm
-        ffn_output = self.ffn(x)
-        attn_ffn = self.norm3(x + ffn_output)
-        ffn2_output = self.ffn2(attn_ffn)
-        x = x + ffn2_output
-        # x = ffn_output
-        return x
+		# Self-Attention + Add & Norm
+		# Our updated MultiHeadAttention handles both batched and unbatched inputs
+		self_attn_output = self.dropout(self.self_attention(x_norm, x_norm, x_norm))
+		x = x + self_attn_output
+		x = self.afn(self.norm1(x + self_attn_output))
+
+		# GCN-Decoder Attention + Add & Norm
+		GCN_dec_attn_output = self.GCN_dec_attention(x, x, y_norm)
+		x = self.afn1(self.norm2(x + GCN_dec_attn_output))
+
+		# Feed Forward + Add & Norm
+		ffn_output = self.ffn(x)
+		attn_ffn = self.norm3(x + ffn_output)
+		ffn2_output = self.ffn2(attn_ffn)
+		x = x + ffn2_output
+
+		return x
+
 
 
 class LennardJonesLayer(nn.Module):
@@ -356,35 +380,57 @@ def gauss_func(distance, amplitude, mean, stddev):
 
 
 class GausLJLayer(nn.Module):
-    def __init__(self):
-        super(GausLJLayer, self).__init__()
-        self.ljlayers = nn.ModuleList([LennardJonesLayer()
-                                       for _ in range(hp.n_lj)])
-        self.gauslayers = nn.ModuleList([GaussianLayer()
-                                         for _ in range(hp.n_gauss)])
+	def __init__(self):
+		super(GausLJLayer, self).__init__()
+		self.ljlayers = nn.ModuleList([LennardJonesLayer()
+		                               for _ in range(hp.n_lj)])
+		self.gauslayers = nn.ModuleList([GaussianLayer()
+		                                 for _ in range(hp.n_gauss)])
 
-    def forward(self, distance, lj_gauss_param):
-        energy = 0
-        forces = 0
-        index = 0
+	def forward(self, distance, lj_gauss_param):
+		# For single input handling (scalar or single-element tensor)
+		if distance.dim() == 0 or (distance.dim() == 1 and len(distance) == 1):
+			return self._forward_single(distance, lj_gauss_param)
 
-        for layer in self.ljlayers:
-            m = lj_gauss_param[index]
-            c = lj_gauss_param[index + 1]
-            sigma = lj_gauss_param[index + 2]
-            (energya, forcesa) = layer(distance, m, c, sigma)
-            forces += forcesa
-            energy += energya
-            index += hp.lj_param
-        for layer in self.gauslayers:
-            amplitude = lj_gauss_param[index]
-            mean = lj_gauss_param[index + 1]
-            stddev = lj_gauss_param[index + 2]
-            (energya, forcesa) = layer(distance, amplitude, mean, stddev)
-            forces += forcesa
-            energy += energya
-            index += hp.gaus_param
-        return (energy, forces)
+		# For batched input
+		batch_size = distance.shape[0]
+		energies = torch.zeros(batch_size, device=distance.device)
+		forces = torch.zeros(batch_size, device=distance.device)
+
+		# Process each batch item
+		for i in range(batch_size):
+			energy, force = self._forward_single(distance[i], lj_gauss_param[i])
+			energies[i] = energy
+			forces[i] = force
+
+		return energies, forces
+
+	def _forward_single(self, distance, lj_gauss_param):
+		"""Original implementation for a single input"""
+		energy = 0
+		forces = 0
+		index = 0
+
+		for layer in self.ljlayers:
+			m = lj_gauss_param[index]
+			c = lj_gauss_param[index + 1]
+			sigma = lj_gauss_param[index + 2]
+			(energya, forcesa) = layer(distance, m, c, sigma)
+			forces += forcesa
+			energy += energya
+			index += hp.lj_param
+
+		for layer in self.gauslayers:
+			amplitude = lj_gauss_param[index]
+			mean = lj_gauss_param[index + 1]
+			stddev = lj_gauss_param[index + 2]
+			(energya, forcesa) = layer(distance, amplitude, mean, stddev)
+			forces += forcesa
+			energy += energya
+			index += hp.gaus_param
+
+		return (energy, forces)
+
 
 
 def layermapper(distance, lj_gauss_param):
@@ -420,33 +466,28 @@ class DecoderModel(nn.Module):
         self.dropout = nn.Dropout(hp.dropout)
 
     def forward(self, distances, gcn_output, is_training=True):
-        if is_training:
-            outputs = []
-            param_outputs = []
-            # print(gcn_output)
-            # print(distances)
-            for (distance, out) in zip(distances, gcn_output):
-                # distance = torch.log(distance)
-                # assert not (distance != distance), "Distance is NaN"
-                y = out.flatten()
-                # y = torch.log(out.flatten())
-                # y = torch.cat([y, distance], dim=0)
-                y = self.embedding(y).view(hp.num_heads * hp.dotf * hp.dotf)
-                # print(y.size)
-                x = y
-                # print(x)
-                for layer in self.layers:
-                    x = layer(x, y)
-                    # x = x.flatten()
-                    # print(x)
-                    # assert not (x != x), "Energy from transformer is NaN"
-                lj_gauss_param = self.fc_out(x).flatten()
+	    if is_training:
+		    batch_size = distances.shape[0]
 
-                param_outputs.append(lj_gauss_param)
-                # print(lj_gauss_param.shape)
-                outputs.append(self.ljgauss(distance, lj_gauss_param))
-            return outputs, param_outputs
+		    # Process all inputs in parallel
+		    y = gcn_output.reshape(batch_size, -1)
+		    y = self.embedding(y).view(batch_size, hp.num_heads * hp.dotf * hp.dotf)
+		    x = y
 
+		    # Apply transformer layers to entire batch
+		    for layer in self.layers:
+			    x = layer(x, y)
+
+		    # Get parameters for all items
+		    lj_gauss_params = self.fc_out(x)
+
+		    # Process all inputs at once with the updated ljgauss
+		    energies, forces = self.ljgauss(distances, lj_gauss_params)
+
+		    # Format output to match expected structure (list of tuples)
+		    outputs = list(zip(energies, forces))
+
+		    return outputs, lj_gauss_params
 
 
 class GCNModel(nn.Module):
@@ -470,28 +511,90 @@ def normalize_vectors(vectors):
 	norms = torch.where(norms == 0, torch.ones_like(norms), norms)  # Avoid division by zero
 	return vectors / norms
 
+# ! Camerons version
+# def compute_forces_per_atom(forces, edge_index, vectors, num_atoms):
+# 	# Allocate forces_per_atom on hp.device to avoid cross-device operations
+# 	forces_per_atom = torch.zeros(num_atoms, 3, device=hp.device)
+# 	for atoms, force, vector in zip(edge_index, forces, vectors):
+# 		# Extract the force magnitude; assumed to be already on hp.device
+# 		force_magnitude = force.to(hp.device)
+# 		for dv in vector:
+# 			dv = dv.to(hp.device)
+# 			force_vector = force_magnitude * dv
+# 			forces_per_atom[atoms[0]] += force_vector # ! We deleted this # / 2
+# 			forces_per_atom[atoms[1]] -= force_vector # ! We deleted this # / 2
+# 	return forces_per_atom
 
-def compute_forces_per_atom(forces, edge_index, vectors, num_atoms):
+
+# def compute_energy_per_atom(
+# 	energy: list,
+# 	edge_index: torch.Tensor,
+# 	vectors: torch.Tensor,
+# 	num_atoms: torch.Tensor
+# ):
+#
+# 	# Allocate forces_per_atom on hp.device to avoid cross-device operations
+# 	energy_per_atom = torch.zeros(num_atoms, 1, device=hp.device)
+# 	for atoms, energy, vector in zip(edge_index, energy, vectors):
+# 		# Extract the force magnitude; assumed to be already on hp.device
+# 		energy_per_atom[atoms[0]] += energy
+# 		energy_per_atom[atoms[1]] += energy
+# 	return energy_per_atom
+
+
+def compute_forces_per_atom(
+		forces: torch.Tensor,
+		edge_index: torch.Tensor,
+		vectors: torch.Tensor,
+		num_atoms: torch.Tensor,
+) -> torch.Tensor:
 	# Allocate forces_per_atom on hp.device to avoid cross-device operations
 	forces_per_atom = torch.zeros(num_atoms, 3, device=hp.device)
-	for atoms, force, vector in zip(edge_index, forces, vectors):
-		# Extract the force magnitude; assumed to be already on hp.device
-		force_magnitude = force.to(hp.device)
-		for dv in vector:
-			dv = dv.to(hp.device)
-			force_vector = force_magnitude * dv
-			forces_per_atom[atoms[0]] += force_vector # ! We deleted this # / 2
-			forces_per_atom[atoms[1]] -= force_vector # ! We deleted this # / 2
+
+	# Ensure forces has correct shape for broadcasting [N, 1]
+	if forces.dim() == 1:
+		forces = forces.view(-1, 1)
+
+	# Move vectors to device if needed
+	vectors = vectors.to(hp.device)
+
+	# Compute force vectors for all interactions at once
+	# Assuming vectors has shape [num_edges, num_dimensions, 3]
+	# where num_dimensions is the number of directional vectors per edge
+
+	# Calculate force vectors for all dimensions
+	# This handles the inner loop vectorization
+	force_vectors = forces.unsqueeze(1) * vectors  # [num_edges, num_dimensions, 3]
+
+	# Sum across dimensions if vectors has multiple dimensions per edge
+	if force_vectors.dim() > 2:
+		force_vectors = force_vectors.sum(dim=1)  # [num_edges, 3]
+
+	# Use scatter_add_ for accumulating forces efficiently
+	# For source atoms (add force)
+	source_indices = edge_index[:, 0].view(-1, 1).expand(-1, 3)
+	forces_per_atom.scatter_add_(0, source_indices, force_vectors)
+
+	# For destination atoms (subtract force)
+	dest_indices = edge_index[:, 1].view(-1, 1).expand(-1, 3)
+	forces_per_atom.scatter_add_(0, dest_indices, -force_vectors)  # Note the negation
+
 	return forces_per_atom
 
+def compute_energy_per_atom(
+		energy: torch.Tensor,
+		edge_index: torch.Tensor,
+		vectors: torch.Tensor,
+		num_atoms: torch.Tensor
+) -> torch.Tensor:
+	# Ensure energy has the right shape for broadcasting
+	if energy.dim() == 1:
+		energy = energy.view(-1, 1)
 
-def compute_energy_per_atom(energy, edge_index, vectors, num_atoms):
 	# Allocate forces_per_atom on hp.device to avoid cross-device operations
 	energy_per_atom = torch.zeros(num_atoms, 1, device=hp.device)
-	for atoms, energy, vector in zip(edge_index, energy, vectors):
-		# Extract the force magnitude; assumed to be already on hp.device
-		energy_per_atom[atoms[0]] += energy
-		energy_per_atom[atoms[1]] += energy
+	energy_per_atom.scatter_add_(0, edge_index[:, 0:1], energy)
+	energy_per_atom.scatter_add_(0, edge_index[:, 1:1], energy)
 	return energy_per_atom
 
 
@@ -510,48 +613,44 @@ class Net(torch.nn.Module):
 		# graph = graph.to(hp.device)
 		pooled_atoms = self.GCN(x_coded, edge_index)
 
-		bonds = []
-		# pairs = []
-		# vectors = []
-		distances = []
+		mask = edge_index[:, 0] != edge_index[:, 1]
+		filtered_edges = edge_index[mask]
 
-		for atom in edge_index:
-			if atom[0] != atom[1]: # @TODO: Self interaction with cosine is neccesary
-				# distance = distance_matrix[atom1][atom2].item()
-				# if distance <= hp.dist_cut:
-				bonds.append(torch.unsqueeze(torch.cat((pooled_atoms[atom[0]],
-														pooled_atoms[atom[1]]),
-													   dim=0), dim=1))
-				bonds.append(torch.unsqueeze(torch.cat((pooled_atoms[atom[1]],
-														pooled_atoms[atom[0]]),
-													   dim=0), dim=1))
-				distances.append(edge_weight[atom[0]])
-				distances.append(edge_weight[atom[0]])
-				# pairs.append((atom[0], atom[1]))
-				# pairs.append((atom[1], atom[0]))
-				# vectors.append(vector_matrix[atom[0]][atom[1]])
-				# vectors.append(vector_matrix[atom[1]][atom[0]])
+		# Get source and destination indices
+		src_indices = filtered_edges[:, 0]
+		dst_indices = filtered_edges[:, 1]
 
-		# bonds = torch.cat(bonds, dim=-1).transpose(1, 0)
-		# distances = torch.tensor(distances).to(hp.device)
-		# distances = torch.cat(distances, dim=0).detach().clone().to(hp.device)
-		# distances.requires_grad = True
-		# bonds = bonds.to(hp.device)
+		# Get corresponding atoms for both directions
+		src_atoms = pooled_atoms[src_indices]
+		dst_atoms = pooled_atoms[dst_indices]
 
+		# Create forward and backward bonds in one go
+		forward_bonds = torch.cat([src_atoms, dst_atoms], dim=1).unsqueeze(2)
+		backward_bonds = torch.cat([dst_atoms, src_atoms], dim=1).unsqueeze(2)
+		bonds = torch.cat([forward_bonds, backward_bonds], dim=0)
+
+		# Get corresponding distances and duplicate them for both directions
+		edge_distances = edge_weight[src_indices]
+		distances = torch.cat([edge_distances, edge_distances], dim=0)
+
+		# Process bonds and distances for the decoder
+		bonds = bonds.to(hp.device)
+		distances = distances.detach().clone().to(hp.device)
+		distances.requires_grad = True
+
+		# Run through decoder
 		energiesforces, params = self.decoder(distances, bonds, is_training=True)
-		predicted_energy = []
-		predicted_forces = []
-		for (energy, force) in energiesforces:
-			# print(len(energy))
-			# sum_energy = energy.sum()
-			# predicted_energy += sum_energy
-			predicted_energy.append(energy)
-			predicted_forces.append(force)
+
+		# Convert results into tensors directly without loops
+		energies, forces = zip(*energiesforces)
+
+		predicted_energy = torch.stack(energies) if isinstance(energies[0], torch.Tensor) else list(energies)
+		predicted_forces = torch.stack(forces) if isinstance(forces[0], torch.Tensor) else list(forces)
 
 		vector_matrix = normalize_vectors(edge_vec)
+
 		predicted_force_per_atom = compute_forces_per_atom(predicted_forces, edge_index, vector_matrix, num_atoms)
 		predicted_energy_per_atom = compute_energy_per_atom(predicted_energy, edge_index, vector_matrix, num_atoms)
-		print(predicted_force_per_atom.size())
 
 		return predicted_energy_per_atom, predicted_force_per_atom
 
