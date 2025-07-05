@@ -2,7 +2,7 @@
 # Distributed under the MIT License.
 # (See accompanying file README.md file or copy at http://opensource.org/licenses/MIT)
 
-from .ace import Ace
+from .ace import Ace, AceHF
 from .ani import ANI1, ANI1CCX, ANI1X, ANI2X
 from .comp6 import (
     ANIMD,
@@ -19,17 +19,17 @@ from .custom import Custom
 from .water import WaterBox
 from .hdf import HDF5
 from .md17 import MD17
-
 from .md22 import MD22
 from .qm9 import QM9
 from .qm9q import QM9q
 from .spice import SPICE
 from .genentech import GenentechTorsions
 from .maceoff import MACEOFF
-from .md_custom import MDCustom, MDCustomInMemory
+from .ase_custom import ASECustom
 
 __all__ = [
     "Ace",
+    "AceHF",
     "ANIMD",
     "ANI1",
     "ANI1CCX",
@@ -53,6 +53,5 @@ __all__ = [
     "Tripeptides",
     "WaterBox",
     "MACEOFF",
-    "MDCustom",
-    "MDCustomInMemory",
+    "MDCustom"
 ]

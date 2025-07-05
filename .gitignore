@@ -140,4 +140,5 @@ docs/source/generated
 
 # Extra
 
-*~
+*~# pixi environments
+.pixi

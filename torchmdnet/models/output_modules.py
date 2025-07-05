@@ -16,39 +16,7 @@ from torchmdnet.utils import atomic_masses
 from torchmdnet.extensions import is_current_stream_capturing
 from warnings import warn
 
-__all__ = ["Scalar", "DipoleMoment", "ElectronicSpatialExtent", "ReturnValue"]
-
-
-class ReturnValue(nn.Module, metaclass=ABCMeta):
-    """Base class for output models.
-
-    Derive this class to make custom output models.
-    As an example, have a look at the :py:mod:`torchmdnet.output_modules.Scalar` output model.
-    """
-
-    def __init__(self,
-         hidden_channels,
-        activation="silu",
-        allow_prior_model=True,
-        reduce_op="sum",
-        dtype=torch.float,
-        **kwargs):
-        super(ReturnValue, self).__init__()
-        self.allow_prior_model = True
-        self.reduce_op = "sum"
-        self.dim_size = 0
-
-    def reset_parameters(self):
-        pass
-
-    def pre_reduce(self, x, v, z, pos, batch):
-        return x
-
-    def reduce(self, x, batch):
-        return x
-
-    def post_reduce(self, x):
-        return x
+__all__ = ["Scalar", "DipoleMoment", "ElectronicSpatialExtent"]
 
 
 class OutputModel(nn.Module, metaclass=ABCMeta):
@@ -98,7 +66,7 @@ class Scalar(OutputModel):
         allow_prior_model=True,
         reduce_op="sum",
         dtype=torch.float,
-        **kwargs
+        **kwargs,
     ):
         super(Scalar, self).__init__(
             allow_prior_model=allow_prior_model, reduce_op=reduce_op
@@ -128,7 +96,7 @@ class EquivariantScalar(OutputModel):
         allow_prior_model=True,
         reduce_op="sum",
         dtype=torch.float,
-        **kwargs
+        **kwargs,
     ):
         super(EquivariantScalar, self).__init__(
             allow_prior_model=allow_prior_model, reduce_op=reduce_op
@@ -170,7 +138,7 @@ class DipoleMoment(Scalar):
         activation="silu",
         reduce_op="sum",
         dtype=torch.float,
-        **kwargs
+        **kwargs,
     ):
         super(DipoleMoment, self).__init__(
             hidden_channels,
@@ -178,7 +146,7 @@ class DipoleMoment(Scalar):
             allow_prior_model=False,
             reduce_op=reduce_op,
             dtype=dtype,
-            **kwargs
+            **kwargs,
         )
         atomic_mass = torch.from_numpy(atomic_masses).to(dtype)
         self.register_buffer("atomic_mass", atomic_mass)
@@ -203,7 +171,7 @@ class EquivariantDipoleMoment(EquivariantScalar):
         activation="silu",
         reduce_op="sum",
         dtype=torch.float,
-        **kwargs
+        **kwargs,
     ):
         super(EquivariantDipoleMoment, self).__init__(
             hidden_channels,
@@ -211,7 +179,7 @@ class EquivariantDipoleMoment(EquivariantScalar):
             allow_prior_model=False,
             reduce_op=reduce_op,
             dtype=dtype,
-            **kwargs
+            **kwargs,
         )
         atomic_mass = torch.from_numpy(atomic_masses).to(dtype)
         self.register_buffer("atomic_mass", atomic_mass)
@@ -237,7 +205,7 @@ class ElectronicSpatialExtent(OutputModel):
         activation="silu",
         reduce_op="sum",
         dtype=torch.float,
-        **kwargs
+        **kwargs,
     ):
         super(ElectronicSpatialExtent, self).__init__(
             allow_prior_model=False, reduce_op=reduce_op
@@ -280,7 +248,7 @@ class EquivariantVectorOutput(EquivariantScalar):
         activation="silu",
         reduce_op="sum",
         dtype=torch.float,
-        **kwargs
+        **kwargs,
     ):
         super(EquivariantVectorOutput, self).__init__(
             hidden_channels,
@@ -288,7 +256,7 @@ class EquivariantVectorOutput(EquivariantScalar):
             allow_prior_model=False,
             reduce_op="sum",
             dtype=dtype,
-            **kwargs
+            **kwargs,
         )
 
     def pre_reduce(self, x, v, z, pos, batch):

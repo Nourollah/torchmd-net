@@ -3,13 +3,9 @@
 # (See accompanying file README.md file or copy at http://opensource.org/licenses/MIT)
 
 __all_models__ = [
-	"graph-network",
-	"transformer",
-	"equivariant-transformer",
-	"tensornet",
-	"mlp_deepset",
-	"deepset",
-	"equivariant-transformer-x",
-	"cmret",
-	"messy"
+    "graph-network",
+    "transformer",
+    "equivariant-transformer",
+    "tensornet",
+    "moe-deepset",
 ]

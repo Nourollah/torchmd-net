@@ -4,9 +4,7 @@
 
 import sys
 import os
-import time
 import yaml
-import random
 import argparse
 import logging
 import torch
@@ -31,10 +29,7 @@ from torchmdnet.utils import (
     check_logs,
 )
 from lightning_utilities.core.rank_zero import rank_zero_warn
-from torch.utils.data import ConcatDataset, Subset, SubsetRandomSampler, random_split
-from torch_geometric.data import DataLoader, InMemoryDataset
-from pytorch_lightning import LightningDataModule
-from rich.pretty import pprint
+
 
 def get_argparse():
     # fmt: off
@@ -87,36 +82,11 @@ def get_argparse():
     parser.add_argument('--train-loss', default='mse_loss', type=str, choices=loss_class_mapping.keys(), help='Loss function to use during training')
     parser.add_argument('--train-loss-arg', default=None, help='Additional arguments for the loss function. Needs to be a dictionary.')
 
-    parser.add_argument('--pairwise-thread', default=True, type=bool, help='Additional arguments for the pairwise distance calculation.')
-    parser.add_argument('--triples-thread', default=True, type=bool, help='Additional arguments for the pairwise distance calculation.')
-    parser.add_argument('--return-vecs', default=True, type=bool, help='Additional arguments for the pairwise distance calculation.')
-    parser.add_argument('--loop', default=True, type=bool, help='Additional arguments for the pairwise distance calculation.')
-    parser.add_argument('--box', default=None, help='Additional arguments for the pairwise distance calculation.')
-    parser.add_argument('--long-edge-index', default=True, type=bool, help='Additional arguments for the pairwise distance calculation.')
-    parser.add_argument('--check-errors', default=True, type=bool, help='Additional arguments for the pairwise distance calculation.')
-    parser.add_argument('--strategy', default='brute', type=str, help='Additional arguments for the pairwise distance calculation.')
-    parser.add_argument('--include-transpose', default=True, type=bool, help='Additional arguments for the pairwise distance calculation.')
-    parser.add_argument('--resize-to-fit', default=True, type=bool, help='Additional arguments for the pairwise distance calculation.')
-
     # model architecture
     parser.add_argument('--model', type=str, default='graph-network', choices=models.__all_models__, help='Which model to train')
     parser.add_argument('--output-model', type=str, default='Scalar', choices=output_modules.__all__, help='The type of output model')
     parser.add_argument('--output-mlp-num-layers', type=int, default=0, help='If the output model uses an MLP this will be the number of hidden layers, excluding the input and output layers.')
     parser.add_argument('--prior-model', type=str, default=None, help='Which prior model to use. It can be a string, a dict if you want to add arguments for it or a dicts to add more than one prior. e.g. {"Atomref": {"max_z":100}, "Coulomb":{"max_num_neighs"=100, "lower_switch_distance"=4, "upper_switch_distance"=8}', action="extend", nargs="*")
-    parser.add_argument('--n-atom-basis', type=int, default=22, help='Additional prior arguments. Needs to be a dictionary.')
-    parser.add_argument('--base-cutoff', type=float, default=0.0, help='Additional prior arguments. Needs to be a dictionary.')
-    parser.add_argument('--inner-cutoff', type=float, default=5.0, help='Additional prior arguments. Needs to be a dictionary.')
-    parser.add_argument('--outer-cutoff', type=float, default=15.0, help='Additional prior arguments. Needs to be a dictionary.')
-    parser.add_argument('--triplets_cutoff', type=float, default=15.0, help='Additional prior arguments. Needs to be a dictionary.')
-    parser.add_argument('--use-vector-representation', type=bool, default=True, help='Additional prior arguments. Needs to be a dictionary.')
-    parser.add_argument('--forces-based-on-energy', type=bool, default=False, help='Additional prior arguments. Needs to be a dictionary.')
-    parser.add_argument('--close-far-split', type=bool, default=True, help='Additional prior arguments. Needs to be a dictionary.')
-    parser.add_argument('--using-triplet-module', type=bool, default=True, help='Additional prior arguments. Needs to be a dictionary.')
-    parser.add_argument('--mlp-layer', type=int, default=3, help='Additional prior arguments. Needs to be a dictionary.')
-    parser.add_argument("--model-arg", default=None, help="Additional model arguments. Needs to be a dictionary.")
-    parser.add_argument('--num-gates', type=int, default=10, help='Additional prior arguments. Needs to be a dictionary.')
-    parser.add_argument('--top-k', type=int, default=2, help='Additional prior arguments. Needs to be a dictionary.')
-    parser.add_argument('--expert-out-features', type=int, default=128, help='Additional prior arguments. Needs to be a dictionary.')
 
     # architectural args
     parser.add_argument('--charge', type=bool, default=False, help='Model needs a total charge. Set this to True if your dataset contains charges and you want them passed down to the model.')
@@ -129,6 +99,7 @@ def get_argparse():
     parser.add_argument('--trainable-rbf', type=bool, default=False, help='If distance expansion functions should be trainable')
     parser.add_argument('--neighbor-embedding', type=bool, default=False, help='If a neighbor embedding should be applied before interactions')
     parser.add_argument('--aggr', type=str, default='add', help='Aggregation operation for CFConv filter output. Must be one of \'add\', \'mean\', or \'max\'')
+    parser.add_argument('--model-arg', default=None, help='Additional model arguments. Needs to be a dictionary.')
 
     # Transformer specific
     parser.add_argument('--distance-influence', type=str, default='both', choices=['keys', 'values', 'both', 'none'], help='Where distance information is included inside the attention')
@@ -170,11 +141,6 @@ def get_argparse():
 def get_args():
     parser = get_argparse()
     args = parser.parse_args()
-
-    # Add timestamp to log_dir
-    timestamp = time.strftime('%Y%m%d-%H%M%S')
-    args.log_dir = os.path.join(args.log_dir.rstrip('/'), timestamp)
-
     if args.redirect:
         sys.stdout = open(os.path.join(args.log_dir, "log"), "w")
         sys.stderr = sys.stdout
@@ -223,72 +189,13 @@ def main():
         if not isinstance(args.prior_model, list):
             args.prior_model = [args.prior_model]
         args.prior_model.append({"Atomref": {"enable": False}})
+
     pl.seed_everything(args.seed, workers=True)
 
     # initialize data module
-    if args.dataset_arg.get("molecules") and len(args.dataset_arg.get("molecules").split("*")) > 1:
-        subset_size: int = args.train_size + args.val_size + args.test_size
-        molecules = args.dataset_arg["molecules"].split(",")
-        datasets_list: list = []
-        std: list = []
-        mean: list = []
-        for mol in molecules:
-            args.dataset_arg["molecules"] = mol
-            data_module = DataModule(args)  # Your existing DataModule class
-            data_module.prepare_data()
-            data_module.setup("fit")  # Prepare data for the 'fit' stage
-            datasets_list.append(data_module.dataset[torch.randperm(len(data_module.dataset))[:subset_size]])
-            std.append(data_module.std)
-            mean.append(data_module.mean)
-
-        data_conc = ConcatDataset(datasets_list)
-        mol_num = len(molecules)
-        args.train_size = args.train_size * mol_num
-        args.val_size = args.val_size * mol_num
-        args.test_size = args.test_size * mol_num
-
-
-        data = DataModule(
-            args,
-            data_conc,
-        )
-
-        data.prepare_data()
-        data.setup("fit")
-
-    elif args.dataset == "MDCustom" and len(args.dataset_arg.get("root").split(",")) > 1:
-        subset_size: int = args.train_size + args.val_size + args.test_size
-        roots = args.dataset_arg["root"].split(",")
-        datasets_list: list = []
-        std: list = []
-        mean: list = []
-        for root in roots:
-            args.dataset_arg["root"] = root
-            data_module = DataModule(args)
-            data_module.prepare_data()
-            data_module.setup("fit")  # Prepare data for the 'fit' stage
-            datasets_list.append(data_module.dataset[torch.randperm(len(data_module.dataset))[:subset_size]])
-            std.append(data_module.std)
-            mean.append(data_module.mean)
-
-        data_conc = ConcatDataset(datasets_list)
-        mol_num = len(roots)
-        args.train_size = args.train_size * mol_num
-        args.val_size = args.val_size * mol_num
-        args.test_size = args.test_size * mol_num
-
-        data = DataModule(
-            args,
-            data_conc,
-        )
-
-        data.prepare_data()
-        data.setup("fit")
-
-    else:
-        data = DataModule(args)
-        data.prepare_data()
-        data.setup("fit")
+    data = DataModule(args)
+    data.prepare_data()
+    data.setup("fit")
 
     prior_models = create_prior_models(vars(args), data.dataset)
     args.prior_args = [p.get_init_args() for p in prior_models]
@@ -319,7 +226,7 @@ def main():
             args.early_stopping_monitor, patience=args.early_stopping_patience
         )
         callbacks.append(early_stopping)
-    
+
     check_logs(args.log_dir)
     csv_logger = CSVLogger(args.log_dir, name="", version="")
     _logger = [csv_logger]
@@ -343,10 +250,6 @@ def main():
         rank_zero_warn(
             f"WARNING: Test set will be evaluated every {args.test_interval} epochs. This will slow down training."
         )
-
-    # Print arguments to store it in logs
-    pprint(args)
-
 
     trainer = pl.Trainer(
         strategy="auto",

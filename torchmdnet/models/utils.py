@@ -112,7 +112,7 @@ class NeighborEmbedding(nn.Module):
         msg = W * x_neighbors.index_select(0, edge_index[1])
         x_neighbors = torch.zeros(
             z.shape[0], x.shape[1], dtype=x.dtype, device=x.device
-        ).index_add(0, edge_index[0], msg) # ? They are doing message passing here
+        ).index_add(0, edge_index[0], msg)
         x_neighbors = self.combine(torch.cat([x, x_neighbors], dim=1))
         return x_neighbors
 

@@ -16,7 +16,6 @@ from torchmdnet import priors
 from lightning_utilities.core.rank_zero import rank_zero_warn
 import warnings
 import zipfile
-import rich
 
 
 def create_model(args, prior_model=None, mean=None, std=None):
@@ -97,33 +96,6 @@ def create_model(args, prior_model=None, mean=None, std=None):
             vector_cutoff=args["vector_cutoff"],
             **shared_args,
         )
-    elif args["model"] == "equivariant-transformer-x":
-        from torchmdnet.models.torchmd_et_rep import TorchMD_ET_X
-
-        is_equivariant = True
-        representation_model = TorchMD_ET_X(
-            attn_activation=args["attn_activation"],
-            num_heads=args["num_heads"],
-            distance_influence=args["distance_influence"],
-            neighbor_embedding=args["neighbor_embedding"],
-            vector_cutoff=args["vector_cutoff"],
-            **shared_args,
-        )
-    elif args["model"] == "deepset":
-        from torchmdnet.models.deepset import DeepSet
-
-        is_equivariant = True
-        representation_model = DeepSet(
-            base_cutoff=args["base_cutoff"],
-            outer_cutoff=args["outer_cutoff"],
-            num_gates=args["num_gates"],
-            k=args["top_k"],
-            max_num_neighbors=args["max_num_neighbors"],
-            embedding_size=args["embedding_dimension"],
-            num_rbf=args["num_rbf"],
-            expert_out_features=args["expert_out_features"],
-            # **shared_args,
-        )
     elif args["model"] == "tensornet":
         from torchmdnet.models.tensornet import TensorNet
 
@@ -134,49 +106,20 @@ def create_model(args, prior_model=None, mean=None, std=None):
             static_shapes=args["static_shapes"],
             **shared_args,
         )
-    elif args["model"] == "mlp_deepset":
-        from torchmdnet.models.mlp_deepset import MLPDeepSet
+    elif args["model"] == "moe-deepset":
+        from torchmdnet.models.moe_deepset import MOEDeepSet
 
         is_equivariant = False
-        representation_model = MLPDeepSet(
-            n_atom_basis=args["n_atom_basis"],
-            base_cutoff=args["base_cutoff"],
-            inner_cutoff=args["inner_cutoff"],
-            outer_cutoff=args["outer_cutoff"],
-            embedding_size=args["embedding_dimension"],
-            mlp_layer=args["mlp_layer"],
-            # radial_basis=None,
-            max_num_neighbors=args["max_num_neighbors"],
-            use_vector_representation=args["use_vector_representation"],
-            forces_based_on_energy=args["forces_based_on_energy"],
-            close_far_split=args["close_far_split"],
-            using_triplet_module=args["using_triplet_module"]
-        )
-
-    elif args["model"] == "cmret":
-        from torchmdnet.models.cmret import CMRETModel
-
-        is_equivariant = False
-        representation_model = CMRETModel(
-            cutoff=args["model_arg"]["cutoff"],
-            n_kernel=args["model_arg"]["n_kernel"],
-            n_atom_basis=args["model_arg"]["n_atom_basis"],
-            n_interaction=args["model_arg"]["n_interaction"],
-            rbf_type=args["model_arg"]["rbf_type"],
-            num_head=args["model_arg"]["num_head"],
-            temperature_coeff=args["model_arg"]["temperature_coeff"],
-        )
-
-    elif args["model"] == "messy":
-        from torchmdnet.models.messy_net import Messy
-
-        is_equivariant = False
-        representation_model = Messy(
-            base_cutoff=args["base_cutoff"],
-            outer_cutoff=args["outer_cutoff"],
-            embedding_size=args["embedding_dimension"],
-            # radial_basis=None,
-            max_num_neighbors=args["max_num_neighbors"],
+        representation_model = MOEDeepSet(
+            base_cutoff=args["model_arg"]["base_cutoff"],
+            outer_cutoff=args["model_arg"]["outer_cutoff"],
+            num_gates=args["model_arg"]["num_gates"],
+            k=args["model_arg"]["top_k"],
+            max_num_neighbors=args["model_arg"]["max_num_neighbors"],
+            embedding_size=args["model_arg"]["embedding_dimension"],
+            num_rbf=args["model_arg"]["num_rbf"],
+            expert_out_features=args["model_arg"]["expert_out_features"],
+            # **shared_args,
         )
     else:
         raise ValueError(f'Unknown architecture: {args["model"]}')
@@ -526,18 +469,17 @@ class TorchMD_Net(nn.Module):
             Tuple[Tensor, Optional[Tensor]]: The output of the model and the derivative of the output with respect to the positions if derivative is True, None otherwise.
         """
         assert z.dim() == 1 and z.dtype == torch.long
-
         batch = torch.zeros_like(z) if batch is None else batch
 
         if self.derivative:
             pos.requires_grad_(True)
         # run the potentially wrapped representation model
         x, v, z, pos, batch = self.representation_model(
-            z, pos, batch, box=box, q=q, s=s,
+            z, pos, batch, box=box, q=q, s=s
         )
+
         # apply the output network
         x = self.output_model.pre_reduce(x, v, z, pos, batch)
-        print(f"The contribution for energy: {x}")
 
         # scale by data standard deviation
         if self.std is not None:
@@ -550,6 +492,7 @@ class TorchMD_Net(nn.Module):
 
         # aggregate atoms
         x = self.output_model.reduce(x, batch)
+
         # shift by data mean
         if self.mean is not None:
             x = x + self.mean
@@ -561,8 +504,8 @@ class TorchMD_Net(nn.Module):
         if self.prior_model is not None:
             for prior in self.prior_model:
                 y = prior.post_reduce(y, z, pos, batch, box, extra_args)
-        self.derivative = False # Turn it false here when inference with ipynb inference is needed
-        # compute gradients with respect t-o coordinates
+        # compute gradients with respect to coordinates
+
         if self.derivative:
             grad_outputs: List[Optional[torch.Tensor]] = [torch.ones_like(y)]
             dy = grad(
